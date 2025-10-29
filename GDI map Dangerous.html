@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>GDI Glitch + Timed Fake BSOD</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    html,body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: black;
+      font-family: "Segoe UI", Roboto, "Helvetica Neue", monospace;
+      -webkit-user-select:none;
+      user-select:none;
+      cursor: none; /* hide real cursor */
+    }
+    canvas { display:block; position:fixed; left:0; top:0; z-index:1; }
+    #fakeCursor {
+      position: fixed;
+      width: 18px;
+      height: 18px;
+      background: white;
+      border-radius: 3px;
+      transform: translate(-50%,-50%);
+      pointer-events: none;
+      z-index: 5;
+      mix-blend-mode: difference;
+      box-shadow: 0 0 10px rgba(255,255,255,0.8);
+    }
+
+    /* BSOD overlay */
+    #bsod {
+      position: fixed;
+      inset: 0;
+      background: #0100a0; /* deep blue */
+      color: #ffffff;
+      z-index: 9999;
+      display: none;
+      padding: 36px;
+      box-sizing: border-box;
+      font-family: "Segoe UI", "Lucida Console", monospace;
+      font-size: 16px;
+      line-height: 1.4;
+    }
+    #bsod .title {
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 18px;
+    }
+    #bsod .msg { white-space: pre-wrap; margin-bottom: 12px; }
+    #bsod .countdown {
+      margin-top: 10px;
+      font-weight: 600;
+    }
+    #bsod .controls { margin-top: 18px; }
+    #bsod button {
+      background: rgba(255,255,255,0.06);
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.08);
+      padding: 8px 14px;
+      cursor: pointer;
+      font-size: 14px;
+      border-radius: 6px;
+    }
+    #help {
+      position: fixed;
+      right: 12px;
+      bottom: 12px;
+      z-index: 10000;
+      background: rgba(0,0,0,0.5);
+      color: #fff;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      pointer-events: none;
+      opacity: 0.8;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gdiCanvas"></canvas>
+  <div id="fakeCursor"></div>
+
+  <div id="bsod" role="alert" aria-live="assertive">
+    <div class="title">:(  Your PC ran into a problem and needs to restart.</div>
+    <div class="msg" id="bsodText">
+Preparing to collect error info.  
+If this is the first time you've seen this stop error screen, restart your computer.  
+If this screen appears again, follow these steps:
+    </div>
+
+    <div class="countdown" id="bsodCountdown">BSOD will clear in 30s</div>
+
+    <div class="controls">
+      <button id="restartBtn">RESTART</button>
+    </div>
+  </div>
+
+  <div id="help">Tab = toggle glitch • B = BSOD • Esc = clear</div>
+
+<script>
+  // Canvas setup
+  const canvas = document.getElementById('gdiCanvas');
+  const ctx = canvas.getContext('2d');
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  window.addEventListener('resize', resize, {passive:true});
+  resize();
+
+  // Visual state
+  let glitchActive = true;
+  let frame = 0;
+
+  // Fake cursor
+  const fakeCursor = document.getElementById('fakeCursor');
+  let cursorX = window.innerWidth/2, cursorY = window.innerHeight/2;
+
+  // GDI-style random rectangles + scanlines + color channels split
+  function gdiFrame() {
+    if (!glitchActive) return;
+
+    frame++;
+    // subtle global fade to create trails
+    ctx.fillStyle = 'rgba(0,0,0,0.12)';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    // exploding rectangles
+    const nRects = 40 + Math.floor(Math.sin(frame*0.07)*20);
+    for (let i=0;i<nRects;i++){
+      const w = Math.random()*500;
+      const h = Math.random()*250;
+      const x = Math.random()*(canvas.width + 200) - 100;
+      const y = Math.random()*(canvas.height + 200) - 100;
+      const colorRoll = Math.floor(Math.random()*5);
+      const colors = ['#ff00ff','#00ffff','#ffff00','#ffffff','#ff4040'];
+      ctx.fillStyle = colors[colorRoll];
+      ctx.fillRect(x,y,w,h);
+    }
+
+    // horizontal slice jitter
+    const slices = 12;
+    for (let s=0;s<slices;s++){
+      const y = Math.floor(Math.random()*canvas.height);
+      const h = 2 + Math.floor(Math.random()*6);
+      ctx.fillStyle = `rgba(0,0,0,${0.08 + Math.random()*0.12})`;
+      ctx.fillRect(0,y,canvas.width,h);
+      // channel offset: copy slice and shift
+      try {
+        const img = ctx.getImageData(0,y,canvas.width,h);
+        const dx = (Math.random()-0.5)*80;
+        ctx.putImageData(img, dx, y);
+      } catch(e) { /* ignore cross-origin/security glitches */ }
+    }
+
+    // flicker lines
+    for (let i=0;i<5;i++){
+      ctx.fillStyle = `rgba(255,255,255,${Math.random()*0.06})`;
+      const y = Math.random()*canvas.height;
+      ctx.fillRect(0,y,canvas.width,1);
+    }
+
+    // small noise dots
+    for (let i=0;i<500;i++){
+      const x = Math.random()*canvas.width;
+      const y = Math.random()*canvas.height;
+      ctx.fillStyle = Math.random()<0.5 ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.02)';
+      ctx.fillRect(x,y,1,1);
+    }
+  }
+
+  // cursor twitching when glitch active
+  function updateCursor() {
+    if (glitchActive) {
+      cursorX += (Math.random()-0.5) * 80;
+      cursorY += (Math.random()-0.5) * 80;
+    } else {
+      // when not glitching, slowly follow center
+      cursorX += (window.innerWidth/2 - cursorX) * 0.08;
+      cursorY += (window.innerHeight/2 - cursorY) * 0.08;
+    }
+    // clamp
+    cursorX = Math.max(0, Math.min(window.innerWidth, cursorX));
+    cursorY = Math.max(0, Math.min(window.innerHeight, cursorY));
+    fakeCursor.style.left = cursorX + 'px';
+    fakeCursor.style.top = cursorY + 'px';
+  }
+
+  // animation loop
+  function loop() {
+    gdiFrame();
+    updateCursor();
+    requestAnimationFrame(loop);
+  }
+  loop();
+
+  // BSOD overlay functions
+  const bsod = document.getElementById('bsod');
+  const bsodText = document.getElementById('bsodText');
+  const bsodCountdown = document.getElementById('bsodCountdown');
+  const restartBtn = document.getElementById('restartBtn');
+
+  let bsodTimer = null;      // setTimeout handle for auto-hide
+  let bsodTicker = null;     // setInterval handle for countdown display
+
+  function showBSOD(customLines, durationSec = 30) {
+    // stop glitch visuals
+    glitchActive = false;
+
+    // create dynamic "dump" text header
+    const now = new Date();
+    let header = `A problem has been detected and Windows has been shut down to prevent damage\nDate: ${now.toLocaleString()}\n\n`;
+    header += (customLines ? customLines + "\n\n" : "");
+
+    // random-ish dump body
+    let dump = header;
+    dump += "Collecting data for crash dump ...\n";
+    dump += "Initializing memory capture:\n\n";
+    const lines = 12;
+    for (let i=0;i<lines;i++){
+      dump += `0x${(Math.random()*0xFFFFFFFF>>>0).toString(16).toUpperCase().padStart(8,'0')} ${Math.random()>0.5? 'KERNEL32' : 'GDI32'}+0x${(Math.random()*0xFFFF>>>0).toString(16).toUpperCase()}\n`;
+    }
+    dump += `\n*** STOP: 0x000000D1 (0x00000000,0x00000000,0x00000000,0x00000000)\n\n`;
+    dump += "If this is the first time you’ve seen this stop error screen, restart your computer.\n";
+    dump += "If this screen appears again, follow these steps:\n\n";
+    dump += "Press RESTART to reboot the system.\n";
+    bsodText.textContent = dump;
+
+    // show overlay
+    bsod.style.display = 'block';
+    canvas.style.filter = 'blur(4px) saturate(0.1)';
+
+    // countdown display + auto-hide timer
+    let remaining = durationSec;
+    bsodCountdown.textContent = `BSOD will clear in ${remaining}s`;
+
+    // clear any existing timers
+    if (bsodTimer) { clearTimeout(bsodTimer); bsodTimer = null; }
+    if (bsodTicker) { clearInterval(bsodTicker); bsodTicker = null; }
+
+    bsodTicker = setInterval(() => {
+      remaining--;
+      if (remaining <= 0) {
+        bsodCountdown.textContent = `Clearing...`;
+        clearInterval(bsodTicker);
+        bsodTicker = null;
+      } else {
+        bsodCountdown.textContent = `BSOD will clear in ${remaining}s`;
+      }
+    }, 1000);
+
+    bsodTimer = setTimeout(() => {
+      hideBSOD();
+    }, durationSec * 1000);
+  }
+
+  function hideBSOD() {
+    // Clear timers
+    if (bsodTimer) { clearTimeout(bsodTimer); bsodTimer = null; }
+    if (bsodTicker) { clearInterval(bsodTicker); bsodTicker = null; }
+
+    bsod.style.display = 'none';
+    canvas.style.filter = '';
+    // resume glitch visuals
+    glitchActive = true;
+    // reset canvas to avoid BSOD remnants
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+  }
+
+  // keyboard controls
+  window.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Tab') {
+      ev.preventDefault();
+      glitchActive = !glitchActive;
+      if (!glitchActive) {
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(0,0,canvas.width,canvas.height);
+      }
+    } else if (ev.key.toLowerCase() === 'b') {
+      showBSOD(null, 30);
+    } else if (ev.key === 'Escape') {
+      hideBSOD();
+    }
+  }, false);
+
+  // restart button simulates reboot: fade out and clear
+  restartBtn.addEventListener('click', () => {
+    // clear any timers to prevent auto-hide double-run
+    if (bsodTimer) { clearTimeout(bsodTimer); bsodTimer = null; }
+    if (bsodTicker) { clearInterval(bsodTicker); bsodTicker = null; }
+
+    bsod.style.transition = 'opacity 700ms ease';
+    bsod.style.opacity = '0';
+    setTimeout(() => {
+      bsod.style.display = 'none';
+      bsod.style.opacity = '1';
+      bsod.style.transition = '';
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      setTimeout(() => { glitchActive = true; }, 400);
+    }, 700);
+  });
+
+  // Disable accidental text selection or context menu
+  document.addEventListener('selectstart', e => e.preventDefault());
+  document.addEventListener('contextmenu', e => e.preventDefault());
+
+  // --- AUTO-TIMED BSOD: show 30s after page load and display for 30s ---
+  // If you want to change delay or duration, edit these two values:
+  const AUTO_SHOW_DELAY_SECONDS = 30;   // time after opening to show the BSOD
+  const AUTO_BSOD_DURATION = 30;       // how long the BSOD stays (seconds)
+
+  // Start a timer immediately after load (and after a short safe delay to ensure rendering)
+  window.addEventListener('load', () => {
+    // slight extra delay to ensure page visuals have started
+    setTimeout(() => {
+      // show BSOD after AUTO_SHOW_DELAY_SECONDS
+      setTimeout(() => {
+        showBSOD("Automatic timed BSOD (simulated).", AUTO_BSOD_DURATION);
+      }, AUTO_SHOW_DELAY_SECONDS * 1000);
+    }, 150);
+  });
+</script>
+</body>
+</html>
